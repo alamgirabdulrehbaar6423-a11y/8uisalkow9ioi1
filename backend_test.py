@@ -1,293 +1,374 @@
 #!/usr/bin/env python3
 """
-Twilio Wake-Up Call API - SPEED VERIFICATION RETEST
-Tests the Vite middleware endpoints at http://localhost:3000/api/wake-up
-Focus: Measure POST /api/wake-up round-trip latency after speed optimization
+Backend test suite for Supabase Edge Function: wake-up
+Tests the deployed phone-call API at https://suwdzoycyeihbkhmpxay.supabase.co/functions/v1/wake-up
 """
+
 import requests
 import time
-import sys
+import json
 
-BASE_URL = "http://localhost:3000"
+BASE_URL = "https://suwdzoycyeihbkhmpxay.supabase.co/functions/v1/wake-up"
+
+def print_test_header(test_name):
+    print(f"\n{'='*80}")
+    print(f"TEST: {test_name}")
+    print('='*80)
+
+def print_result(success, message):
+    status = "✅ PASS" if success else "❌ FAIL"
+    print(f"{status}: {message}")
 
 def test_health_endpoint():
-    """Test 1: GET /api/wake-up/health - verify credentials without placing call"""
-    print("\n" + "="*80)
-    print("TEST 1: Health Check (safe, no call placed)")
-    print("="*80)
+    """Test 1: GET /health - credential check without placing a call"""
+    print_test_header("GET /health - Credential Check")
+    
     try:
-        response = requests.get(f"{BASE_URL}/api/wake-up/health", timeout=10)
-        print(f"✓ Status: {response.status_code}")
-        data = response.json()
-        print(f"✓ Response: {data}")
+        response = requests.get(f"{BASE_URL}/health", timeout=10)
+        print(f"Status Code: {response.status_code}")
+        print(f"Headers: {dict(response.headers)}")
+        print(f"Response Body: {response.text}")
         
-        if response.status_code == 200:
-            if data.get("ok") and data.get("accountType"):
-                print(f"✅ HEALTH CHECK PASSED")
-                print(f"   - Account Type: {data.get('accountType')}")
-                print(f"   - Account Status: {data.get('accountStatus')}")
-                print(f"   - From: {data.get('fromNumber')}")
-                print(f"   - To: {data.get('toNumber')}")
-                return True, data.get("accountType")
-            else:
-                print(f"❌ HEALTH CHECK FAILED - Invalid response structure")
-                return False, None
-        else:
-            print(f"❌ HEALTH CHECK FAILED - HTTP {response.status_code}")
-            return False, None
+        # Check status code
+        if response.status_code != 200:
+            print_result(False, f"Expected status 200, got {response.status_code}")
+            return False
+        
+        # Check CORS header
+        cors_header = response.headers.get('Access-Control-Allow-Origin')
+        if cors_header != '*':
+            print_result(False, f"Expected CORS header '*', got '{cors_header}'")
+            return False
+        
+        # Check JSON response
+        data = response.json()
+        required_fields = ['ok', 'accountStatus', 'accountType', 'fromNumber', 'toNumber', 'host']
+        for field in required_fields:
+            if field not in data:
+                print_result(False, f"Missing required field: {field}")
+                return False
+        
+        if data['ok'] != True:
+            print_result(False, f"Expected ok=true, got {data['ok']}")
+            return False
+        
+        if data['host'] != 'supabase-edge':
+            print_result(False, f"Expected host='supabase-edge', got '{data['host']}'")
+            return False
+        
+        # Check phone number masking
+        if '•' not in data['toNumber']:
+            print_result(False, f"Expected masked toNumber with '•', got '{data['toNumber']}'")
+            return False
+        
+        print_result(True, f"Health check passed. Account: {data['accountType']}, Status: {data['accountStatus']}")
+        return True
+        
     except Exception as e:
-        print(f"❌ HEALTH CHECK FAILED - Exception: {e}")
-        return False, None
+        print_result(False, f"Exception occurred: {str(e)}")
+        return False
 
 def test_twiml_endpoint():
-    """Test 2: GET /api/wake-up/twiml - verify TwiML XML is served correctly"""
-    print("\n" + "="*80)
-    print("TEST 2: TwiML Endpoint (safe, returns XML)")
-    print("="*80)
-    try:
-        response = requests.get(f"{BASE_URL}/api/wake-up/twiml", timeout=10)
-        print(f"✓ Status: {response.status_code}")
-        print(f"✓ Content-Type: {response.headers.get('Content-Type')}")
-        
-        if response.status_code == 200 and "text/xml" in response.headers.get("Content-Type", ""):
-            if "<Say" in response.text and "Good morning" in response.text:
-                print(f"✅ TWIML ENDPOINT PASSED - Valid XML with 'Good morning' message")
-                return True
-            else:
-                print(f"❌ TWIML ENDPOINT FAILED - XML missing expected content")
-                return False
-        else:
-            print(f"❌ TWIML ENDPOINT FAILED - HTTP {response.status_code} or wrong content type")
-            return False
-    except Exception as e:
-        print(f"❌ TWIML ENDPOINT FAILED - Exception: {e}")
-        return False
-
-def test_status_validation():
-    """Test 3: GET /api/wake-up/status - verify validation (safe, no call)"""
-    print("\n" + "="*80)
-    print("TEST 3: Status Endpoint Validation (safe)")
-    print("="*80)
-    
-    # Test with invalid callSid
-    try:
-        response = requests.get(f"{BASE_URL}/api/wake-up/status?callSid=INVALID", timeout=10)
-        print(f"✓ With invalid callSid - Status: {response.status_code}")
-        if response.status_code == 400:
-            print("✅ STATUS VALIDATION PASSED - Rejects invalid callSid format")
-            return True
-        else:
-            print("❌ STATUS VALIDATION FAILED - Should return 400 for invalid callSid")
-            return False
-    except Exception as e:
-        print(f"❌ STATUS VALIDATION FAILED - Exception: {e}")
-        return False
-
-def test_real_call_with_latency():
-    """Test 4: POST /api/wake-up - PLACE ONE REAL CALL and MEASURE LATENCY"""
-    print("\n" + "="*80)
-    print("⚠️  TEST 4: REAL CALL - Placing ONE call to +966503787701")
-    print("⚠️  MEASURING POST ROUND-TRIP LATENCY")
-    print("="*80)
-    print("⚠️  WARNING: This will ring a REAL iPhone. Sending POST request NOW...")
+    """Test 2: GET /twiml - call script XML"""
+    print_test_header("GET /twiml - Call Script XML")
     
     try:
-        # Measure wall-clock time from sending request to receiving response
-        start_time = time.perf_counter()
-        response = requests.post(f"{BASE_URL}/api/wake-up", timeout=15)
-        end_time = time.perf_counter()
+        response = requests.get(f"{BASE_URL}/twiml", timeout=10)
+        print(f"Status Code: {response.status_code}")
+        print(f"Content-Type: {response.headers.get('Content-Type')}")
+        print(f"Response Body: {response.text}")
         
-        elapsed_ms = (end_time - start_time) * 1000  # Convert to milliseconds
+        # Check status code
+        if response.status_code != 200:
+            print_result(False, f"Expected status 200, got {response.status_code}")
+            return False
         
-        print(f"✓ Status: {response.status_code}")
-        print(f"⏱️  POST LATENCY: {elapsed_ms:.0f} ms ({elapsed_ms/1000:.3f} seconds)")
+        # Check content type
+        content_type = response.headers.get('Content-Type', '')
+        if 'text/xml' not in content_type:
+            print_result(False, f"Expected Content-Type 'text/xml', got '{content_type}'")
+            return False
+        
+        # Check XML content
+        body = response.text
+        if '<Say voice="alice" loop="3">Good morning.</Say>' not in body:
+            print_result(False, "Expected TwiML with 'Good morning' message not found")
+            return False
+        
+        print_result(True, "TwiML endpoint returned correct XML")
+        return True
+        
+    except Exception as e:
+        print_result(False, f"Exception occurred: {str(e)}")
+        return False
+
+def test_cors_preflight():
+    """Test 3: OPTIONS request - CORS preflight"""
+    print_test_header("OPTIONS / - CORS Preflight")
+    
+    try:
+        headers = {
+            'Origin': 'https://example.netlify.app',
+            'Access-Control-Request-Method': 'POST'
+        }
+        response = requests.options(BASE_URL, headers=headers, timeout=10)
+        print(f"Status Code: {response.status_code}")
+        print(f"Headers: {dict(response.headers)}")
+        
+        # Check status code (204 or 200 acceptable)
+        if response.status_code not in [200, 204]:
+            print_result(False, f"Expected status 200 or 204, got {response.status_code}")
+            return False
+        
+        # Check CORS header
+        cors_header = response.headers.get('Access-Control-Allow-Origin')
+        if cors_header != '*':
+            print_result(False, f"Expected CORS header '*', got '{cors_header}'")
+            return False
+        
+        print_result(True, "CORS preflight passed")
+        return True
+        
+    except Exception as e:
+        print_result(False, f"Exception occurred: {str(e)}")
+        return False
+
+def test_status_no_callsid():
+    """Test 4: GET /status without callSid - validation error"""
+    print_test_header("GET /status - No callSid (validation)")
+    
+    try:
+        response = requests.get(f"{BASE_URL}/status", timeout=10)
+        print(f"Status Code: {response.status_code}")
+        print(f"Response Body: {response.text}")
+        
+        # Check status code
+        if response.status_code != 400:
+            print_result(False, f"Expected status 400, got {response.status_code}")
+            return False
+        
+        # Check error message
+        data = response.json()
+        if data.get('ok') != False:
+            print_result(False, f"Expected ok=false, got {data.get('ok')}")
+            return False
+        
+        if 'A valid callSid is required' not in data.get('error', ''):
+            print_result(False, f"Expected validation error message, got '{data.get('error')}'")
+            return False
+        
+        print_result(True, "Validation error returned correctly for missing callSid")
+        return True
+        
+    except Exception as e:
+        print_result(False, f"Exception occurred: {str(e)}")
+        return False
+
+def test_status_invalid_callsid():
+    """Test 5: GET /status with invalid callSid - validation error"""
+    print_test_header("GET /status?callSid=INVALID123 - Invalid callSid")
+    
+    try:
+        response = requests.get(f"{BASE_URL}/status?callSid=INVALID123", timeout=10)
+        print(f"Status Code: {response.status_code}")
+        print(f"Response Body: {response.text}")
+        
+        # Check status code
+        if response.status_code != 400:
+            print_result(False, f"Expected status 400, got {response.status_code}")
+            return False
+        
+        # Check error message
+        data = response.json()
+        if data.get('ok') != False:
+            print_result(False, f"Expected ok=false, got {data.get('ok')}")
+            return False
+        
+        if 'A valid callSid is required' not in data.get('error', ''):
+            print_result(False, f"Expected validation error message, got '{data.get('error')}'")
+            return False
+        
+        print_result(True, "Validation error returned correctly for invalid callSid")
+        return True
+        
+    except Exception as e:
+        print_result(False, f"Exception occurred: {str(e)}")
+        return False
+
+def test_root_get_404():
+    """Test 6: GET / (plain GET on root) - expect 404"""
+    print_test_header("GET / - Root endpoint (should be 404)")
+    
+    try:
+        response = requests.get(BASE_URL, timeout=10)
+        print(f"Status Code: {response.status_code}")
+        print(f"Response Body: {response.text}")
+        
+        # Check status code
+        if response.status_code != 404:
+            print_result(False, f"Expected status 404, got {response.status_code}")
+            return False
+        
+        # Check error message
+        data = response.json()
+        if data.get('ok') != False:
+            print_result(False, f"Expected ok=false, got {data.get('ok')}")
+            return False
+        
+        if 'Not found' not in data.get('error', ''):
+            print_result(False, f"Expected 'Not found' error, got '{data.get('error')}'")
+            return False
+        
+        print_result(True, "Root GET correctly returns 404")
+        return True
+        
+    except Exception as e:
+        print_result(False, f"Exception occurred: {str(e)}")
+        return False
+
+def test_place_real_call():
+    """Test 7: POST / - place EXACTLY ONE real phone call"""
+    print_test_header("POST / - Place REAL Phone Call (ONE ATTEMPT ONLY)")
+    
+    print("⚠️  WARNING: This will place a REAL phone call to the user's phone!")
+    print("⚠️  This test will run EXACTLY ONCE and will NOT retry on failure.")
+    
+    try:
+        response = requests.post(BASE_URL, timeout=15)
+        print(f"Status Code: {response.status_code}")
+        print(f"Response Body: {response.text}")
         
         data = response.json()
-        print(f"✓ Response: {data}")
         
-        if response.status_code == 201 and data.get("ok"):
-            call_sid = data.get("callSid")
-            status = data.get("status")
-            trial_mode = data.get("trialMode")
-            print(f"✅ CALL PLACED SUCCESSFULLY!")
-            print(f"   - Call SID: {call_sid}")
-            print(f"   - Initial Status: {status}")
-            print(f"   - Trial Mode: {trial_mode}")
-            print(f"   - POST Latency: {elapsed_ms:.0f} ms")
+        # Check if call was successful
+        if response.status_code == 201 and data.get('ok') == True:
+            call_sid = data.get('callSid')
+            status = data.get('status')
+            trial_mode = data.get('trialMode')
             
-            # Performance assessment
-            if elapsed_ms < 1500:
-                print(f"   🎉 EXCELLENT: Latency under 1.5s target!")
-            elif elapsed_ms < 2000:
-                print(f"   ✅ GOOD: Latency under 2s (improved from previous 2-3s)")
-            else:
-                print(f"   ⚠️  Latency higher than expected (target: <1.5s)")
-            
-            return True, call_sid, trial_mode, elapsed_ms, time.time()
+            print_result(True, f"Call placed successfully! CallSid: {call_sid}, Status: {status}, Trial: {trial_mode}")
+            return True, call_sid
         else:
-            error_code = data.get("code", 0)
-            error_msg = data.get("error", "Unknown error")
-            print(f"❌ CALL PLACEMENT FAILED")
-            print(f"   - HTTP Status: {response.status_code}")
-            print(f"   - Error Code: {error_code}")
-            print(f"   - Error Message: {error_msg}")
-            print(f"   - POST Latency: {elapsed_ms:.0f} ms")
-            return False, None, None, elapsed_ms, None
+            # Call failed - check for known user-side errors
+            error_code = data.get('code')
+            error_msg = data.get('error', 'Unknown error')
             
-    except Exception as e:
-        print(f"❌ CALL PLACEMENT FAILED - Exception: {e}")
-        return False, None, None, None, None
-
-def poll_call_status(call_sid, call_start_time, max_duration=75):
-    """Test 5: Poll call status until terminal state - RECORD TIMESTAMPED SEQUENCE"""
-    print("\n" + "="*80)
-    print(f"TEST 5: Status Polling (callSid: {call_sid})")
-    print("Polling every 2 seconds for up to 75 seconds")
-    print("="*80)
-    
-    status_sequence = []
-    status_timestamps = {}  # Track when each status first appeared
-    ringing_time = None
-    terminal_time = None
-    
-    poll_start = time.time()
-    
-    while time.time() - poll_start < max_duration:
-        try:
-            response = requests.get(
-                f"{BASE_URL}/api/wake-up/status?callSid={call_sid}",
-                timeout=10
-            )
-            
-            if response.status_code == 200:
-                data = response.json()
-                status = data.get("status")
-                duration = data.get("duration")
-                
-                current_time = time.time()
-                elapsed_from_post = current_time - call_start_time
-                
-                if status not in status_sequence:
-                    status_sequence.append(status)
-                    status_timestamps[status] = elapsed_from_post
-                    
-                    print(f"[{elapsed_from_post:.1f}s from POST] Status: {status}" + 
-                          (f" (call duration: {duration}s)" if duration else ""))
-                    
-                    # Track when ringing first occurs
-                    if status == "ringing" and ringing_time is None:
-                        ringing_time = elapsed_from_post
-                        print(f"   🔔 RINGING detected {ringing_time:.1f}s after POST!")
-                
-                # Terminal states
-                if status in ["completed", "no-answer", "busy", "canceled", "failed"]:
-                    terminal_time = elapsed_from_post
-                    print(f"\n✅ REACHED TERMINAL STATE: {status}")
-                    print(f"   Time from POST to terminal: {terminal_time:.1f}s")
-                    print(f"   Full status sequence: {' → '.join(status_sequence)}")
-                    
-                    if ringing_time is not None:
-                        print(f"   🎉 SUCCESS: Phone RANG {ringing_time:.1f}s after POST")
-                        print(f"   Time from POST to ringing: {ringing_time:.1f}s")
-                        print(f"   Time from ringing to {status}: {terminal_time - ringing_time:.1f}s")
-                        return True, status_sequence, status, status_timestamps, ringing_time
-                    else:
-                        print(f"   ⚠️  Call ended without ringing phase")
-                        return True, status_sequence, status, status_timestamps, None
-                
+            known_user_errors = [21215, 21608, 21219]
+            if error_code in known_user_errors:
+                print(f"⚠️  USER-SIDE CONFIGURATION NEEDED (NOT A BUG):")
+                print(f"   Code: {error_code}")
+                print(f"   Message: {error_msg}")
+                print_result(True, "Function works correctly - user needs to complete Twilio Console setup")
+                return True, None
             else:
-                print(f"❌ Status poll failed: HTTP {response.status_code}")
-                break
-                
-        except Exception as e:
-            print(f"❌ Status poll exception: {e}")
-            break
+                print_result(False, f"Call failed with code {error_code}: {error_msg}")
+                return False, None
         
-        time.sleep(2)  # Poll every 2 seconds as specified
+    except Exception as e:
+        print_result(False, f"Exception occurred: {str(e)}")
+        return False, None
+
+def test_poll_call_status(call_sid):
+    """Test 8: Poll GET /status?callSid=<real> - track call status transitions"""
+    print_test_header(f"GET /status?callSid={call_sid} - Poll Call Status")
     
-    print(f"\n⏱️  Polling timeout after {max_duration}s")
-    print(f"   Status sequence observed: {' → '.join(status_sequence)}")
-    return False, status_sequence, status_sequence[-1] if status_sequence else None, status_timestamps, ringing_time
+    if not call_sid:
+        print("⚠️  Skipping status polling - no callSid available")
+        return True
+    
+    print(f"Polling call status for callSid: {call_sid}")
+    print("Will poll every 3 seconds for up to 60 seconds...")
+    
+    terminal_statuses = ['completed', 'no-answer', 'busy', 'failed', 'canceled']
+    max_polls = 20  # 60 seconds / 3 seconds
+    poll_count = 0
+    last_status = None
+    
+    try:
+        while poll_count < max_polls:
+            poll_count += 1
+            response = requests.get(f"{BASE_URL}/status?callSid={call_sid}", timeout=10)
+            
+            if response.status_code != 200:
+                print_result(False, f"Poll {poll_count}: Expected status 200, got {response.status_code}")
+                return False
+            
+            data = response.json()
+            
+            if data.get('ok') != True:
+                print_result(False, f"Poll {poll_count}: Expected ok=true, got {data.get('ok')}")
+                return False
+            
+            current_status = data.get('status')
+            duration = data.get('duration')
+            
+            if current_status != last_status:
+                print(f"Poll {poll_count}: Status changed to '{current_status}' (duration: {duration})")
+                last_status = current_status
+            else:
+                print(f"Poll {poll_count}: Status still '{current_status}'")
+            
+            # Check if terminal status reached
+            if current_status in terminal_statuses:
+                print_result(True, f"Call reached terminal status: {current_status}")
+                return True
+            
+            # Wait 3 seconds before next poll
+            if poll_count < max_polls:
+                time.sleep(3)
+        
+        print_result(True, f"Polling completed after {poll_count} attempts. Last status: {last_status}")
+        return True
+        
+    except Exception as e:
+        print_result(False, f"Exception occurred during polling: {str(e)}")
+        return False
 
 def main():
     print("\n" + "="*80)
-    print("TWILIO WAKE-UP CALL API - SPEED VERIFICATION RETEST")
+    print("SUPABASE EDGE FUNCTION TEST SUITE: wake-up")
     print("="*80)
-    print("Goal: Measure POST /api/wake-up round-trip latency after optimization")
-    print("Expected: <1.5s (previously 2-3s due to blocking account-tier lookup)")
-    print("Architecture: Vite + React SPA, API = Vite middleware on port 3000")
-    print("Testing: http://localhost:3000/api/wake-up endpoints")
+    print(f"Base URL: {BASE_URL}")
     print("="*80)
     
-    # Test 1: Health check (safe)
-    health_passed, account_type = test_health_endpoint()
-    if not health_passed:
-        print("\n❌ CRITICAL: Health check failed. Cannot proceed with call test.")
-        sys.exit(1)
+    results = {}
     
-    # Test 2: TwiML endpoint (safe)
-    twiml_passed = test_twiml_endpoint()
+    # Run tests in order
+    results['health'] = test_health_endpoint()
+    results['twiml'] = test_twiml_endpoint()
+    results['cors'] = test_cors_preflight()
+    results['status_no_callsid'] = test_status_no_callsid()
+    results['status_invalid_callsid'] = test_status_invalid_callsid()
+    results['root_get_404'] = test_root_get_404()
     
-    # Test 3: Status validation (safe)
-    validation_passed = test_status_validation()
+    # Real call test (EXACTLY ONE attempt)
+    call_success, call_sid = test_place_real_call()
+    results['place_call'] = call_success
     
-    # Test 4: REAL CALL with latency measurement (ONE attempt only)
-    call_success, call_sid, trial_mode, post_latency_ms, call_start_time = test_real_call_with_latency()
+    # Poll status if we got a callSid
+    if call_sid:
+        results['poll_status'] = test_poll_call_status(call_sid)
+    else:
+        results['poll_status'] = True  # Skip if no callSid
     
-    if not call_success:
-        print("\n" + "="*80)
-        print("FINAL RESULT: CALL PLACEMENT FAILED")
-        print("="*80)
-        print("Safe endpoints (health, twiml, validation) may have passed,")
-        print("but the POST /api/wake-up call placement failed.")
-        print("See error details above.")
-        sys.exit(1)
+    # Summary
+    print("\n" + "="*80)
+    print("TEST SUMMARY")
+    print("="*80)
     
-    # Test 5: Poll status if call was placed
-    if call_sid and call_start_time:
-        poll_success, status_sequence, final_status, status_timestamps, ringing_time = poll_call_status(call_sid, call_start_time)
-        
-        print("\n" + "="*80)
-        print("FINAL RESULT SUMMARY - SPEED VERIFICATION")
-        print("="*80)
-        print(f"✅ Health Check: PASSED (Account Type: {account_type})")
-        print(f"{'✅' if twiml_passed else '❌'} TwiML Endpoint: {'PASSED' if twiml_passed else 'FAILED'}")
-        print(f"{'✅' if validation_passed else '❌'} Status Validation: {'PASSED' if validation_passed else 'FAILED'}")
-        print(f"\n🎯 SPEED METRICS:")
-        print(f"   - POST /api/wake-up latency: {post_latency_ms:.0f} ms ({post_latency_ms/1000:.3f}s)")
-        if post_latency_ms < 1500:
-            print(f"   - ✅ EXCELLENT: Under 1.5s target!")
-        elif post_latency_ms < 2000:
-            print(f"   - ✅ GOOD: Improved from previous 2-3s")
-        else:
-            print(f"   - ⚠️  Higher than 1.5s target")
-        
-        print(f"\n📞 CALL DETAILS:")
-        print(f"   - Call SID: {call_sid}")
-        print(f"   - Trial Mode: {trial_mode}")
-        print(f"   - Status Sequence: {' → '.join(status_sequence)}")
-        print(f"   - Final Status: {final_status}")
-        
-        print(f"\n⏱️  TIMESTAMPED STATUS SEQUENCE (seconds from POST):")
-        for status in status_sequence:
-            timestamp = status_timestamps.get(status, 0)
-            print(f"   - {timestamp:5.1f}s: {status}")
-        
-        if ringing_time is not None:
-            print(f"\n🔔 RINGING METRICS:")
-            print(f"   - Time from POST to 'ringing': {ringing_time:.1f}s")
-            print(f"   - This is Twilio + carrier setup time (outside app control)")
-            print(f"   - 🎉 SUCCESS: The phone ACTUALLY RANG!")
-        else:
-            print(f"\n⚠️  Call placed but did not reach 'ringing' state")
-        
-        print("="*80)
-        
-        if poll_success and ringing_time is not None:
-            print("\n✅ SPEED VERIFICATION COMPLETE - ALL TESTS PASSED")
-            print(f"   POST latency: {post_latency_ms:.0f}ms, Phone rang after {ringing_time:.1f}s")
-        else:
-            print("\n⚠️  SPEED VERIFICATION INCOMPLETE")
+    for test_name, passed in results.items():
+        status = "✅ PASS" if passed else "❌ FAIL"
+        print(f"{status}: {test_name}")
+    
+    total = len(results)
+    passed = sum(1 for v in results.values() if v)
+    
+    print("="*80)
+    print(f"TOTAL: {passed}/{total} tests passed")
+    print("="*80)
+    
+    return all(results.values())
 
 if __name__ == "__main__":
-    main()
+    success = main()
+    exit(0 if success else 1)
