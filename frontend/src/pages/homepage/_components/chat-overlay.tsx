@@ -51,6 +51,19 @@ const SESSION_ID_KEY = "hb_chat_session_id";
 const LAST_READ_KEY = "hb_chat_last_read";
 const SENDER_KEY = "hb_chat_sender";
 
+// ─── Wake-up call API base ───────────────────────────────────────────────────
+// In production the "Wake Me Up" endpoints are hosted on a Supabase Edge
+// Function (VITE_WAKE_UP_API_BASE, baked into the bundle at build time), so
+// the static site can place REAL phone calls from any host — Netlify
+// drag-and-drop included. If the variable is missing we fall back to the
+// same-origin /api middleware served by the Vite dev server
+// (see frontend/server/twilio-wake-up.ts).
+const WAKE_API_BASE =
+  ((import.meta.env.VITE_WAKE_UP_API_BASE as string | undefined) ?? "").replace(
+    /\/+$/,
+    "",
+  ) || "/api";
+
 // Shared style for the small round search-nav buttons (up / down / close).
 const searchNavBtnStyle: CSSProperties = {
   width: 30,
@@ -481,8 +494,9 @@ export default function ChatOverlay({
     // device the instant ⏰ is tapped — before haptics, state updates, the
     // ringtone AudioContext or anything else runs. Every ms here delays the
     // actual phone ringing. (The server keeps a hot TLS connection to Twilio,
-    // so this request goes straight onto an already-open socket.)
-    const callPromise = fetch("/api/wake-up", { method: "POST" });
+    // actual phone ringing. (The wake-up API is a Supabase Edge Function in
+    // production, or the local /api middleware during development.)
+    const callPromise = fetch(`${WAKE_API_BASE}/wake-up`, { method: "POST" });
 
     haptics.light();
     teardownWake();
@@ -520,7 +534,7 @@ export default function ChatOverlay({
           void (async () => {
             try {
               const r = await fetch(
-                `/api/wake-up/status?callSid=${encodeURIComponent(callSid)}`,
+                `${WAKE_API_BASE}/wake-up/status?callSid=${encodeURIComponent(callSid)}`,
               );
               const s = (await r.json().catch(() => null)) as {
                 status?: string | null;

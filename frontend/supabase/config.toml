@@ -1,0 +1,8 @@
+# Supabase project configuration (used by the Supabase CLI for deploys).
+project_id = "suwdzoycyeihbkhmpxay"
+
+# The wake-up function must be publicly reachable WITHOUT a Supabase JWT:
+#  - the SPA calls it with a plain fetch() (no auth headers → no CORS preflight)
+#  - Twilio's servers fetch /wake-up/twiml when a full-account call connects
+[functions.wake-up]
+verify_jwt = false
