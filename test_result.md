@@ -37,6 +37,9 @@ backend:
       - working: true
         agent: "testing"
         comment: "✅ PASSED - GET /health returns 200 with correct JSON structure. Account: Trial, Status: active. CORS header Access-Control-Allow-Origin:* present. Phone number correctly masked (+966503•••••). All required fields present: ok, accountStatus, accountType, fromNumber, toNumber, host='supabase-edge'."
+      - working: true
+        agent: "testing"
+        comment: "✅ PASSED (SPEED OPTIMIZATION RETEST) - GET /health warm-up mechanism working correctly. Cold call: 534ms, Warm call: 432ms (19% improvement). All validations passed: ok:true, accountType:Trial, host:supabase-edge, CORS:*. The warm-up endpoint successfully refreshes tier cache and keeps isolate warm."
   - task: "Supabase Edge Function wake-up: GET /twiml (call script XML)"
     implemented: true
     working: true
@@ -79,6 +82,9 @@ backend:
       - working: true
         agent: "testing"
         comment: "✅ PASSED - POST / successfully placed a real phone call. Response: 201 {ok:true, callSid:'CA75e8c0719ff15ac58556ccb437d07f2f', status:'queued', trialMode:true}. Call status tracked through polling: queued → ringing → busy. The phone ACTUALLY RANG (reached 'ringing' status), confirming the wake-up feature works end-to-end. Terminal status 'busy' is expected behavior (user declined/didn't answer). Trial mode working correctly."
+      - working: true
+        agent: "testing"
+        comment: "✅ PASSED (SPEED OPTIMIZATION RETEST) - POST / latency: 1262ms (target: <1500ms) - GOOD performance. Time-to-ringing: 2.3 seconds from POST to ringing - EXCELLENT. Real call placed successfully (callSid: CAc34747d19d6150874f33903553aefbaa). Status transitions: queued → ringing (2.3s) → busy (15.5s). The phone ACTUALLY RANG. Speed optimization is working - no blocking on Twilio account-tier lookup, cached tier used with background refresh."
   - task: "Local dev fallback: Vite middleware /api/wake-up (frontend/server/twilio-wake-up.ts)"
     implemented: true
     working: true
@@ -144,3 +150,35 @@ agent_communication:
       🎉 CRITICAL SUCCESS: The phone ACTUALLY RANG (reached 'ringing' status), confirming the wake-up feature works end-to-end on the deployed Supabase Edge Function. The 'busy' terminal status is expected (user declined/didn't answer). Trial mode is working correctly with Twilio's TTS template URL.
       
       Minor issue: GET /twiml returns Content-Type 'text/plain' instead of 'text/xml', but the XML content is correct and Twilio will parse it correctly. This is likely Supabase Edge Function default behavior and does not affect functionality.
+
+  - agent: "main"
+    message: >
+      SPEED OPTIMIZATION (user reported slow time-to-ring): (1) Edge function POST path no longer
+      awaits the Twilio account-tier lookup — it uses the module-scope cache and refreshes in the
+      background via EdgeRuntime.waitUntil; (2) GET /health now doubles as a warm-up: it refreshes
+      the tier cache and keeps the isolate + TLS connection hot; (3) frontend pings /health on chat
+      mount, every 2 minutes and on tab-visibility. Redeployed to Supabase. Retest: health (200,
+      ok:true), then measure POST /wake-up latency after a warm-up ping — expect the 201 response
+      well under ~1.5s. ONE real call max, poll status every 1s, record seconds until 'ringing'.
+  - agent: "testing"
+    message: >
+      ✅ SPEED OPTIMIZATION RETEST - ALL TESTS PASSED. The speed optimization is working excellently:
+      
+      WARM-UP MECHANISM (GET /health):
+      - Cold call: 534ms, Warm call: 432ms (19% improvement)
+      - Tier cache refresh and isolate warm-up working correctly
+      - All validations passed: ok:true, accountType:Trial, host:supabase-edge, CORS:*
+      
+      REGRESSION TESTS:
+      - GET /twiml: ✅ PASSED (200 with 'Good morning' XML)
+      - GET /status?callSid=INVALID: ✅ PASSED (400 {ok:false})
+      - GET / (root): ✅ PASSED (404 as expected)
+      
+      SPEED + REAL CALL TEST:
+      - POST latency: 1262ms (target: <1500ms, ideal: <1000ms) - GOOD performance ✅
+      - Time-to-ringing: 2.3 seconds from POST to ringing - EXCELLENT ✅
+      - Real call placed successfully (callSid: CAc34747d19d6150874f33903553aefbaa)
+      - Status transitions: queued → ringing (2.3s) → busy (15.5s)
+      - The phone ACTUALLY RANG
+      
+      🎉 SPEED OPTIMIZATION SUCCESS: The POST endpoint no longer blocks on Twilio account-tier lookup (uses cached tier with background refresh). The warm-up mechanism (GET /health) successfully keeps the isolate and TLS connection hot. Time-to-ringing of 2.3 seconds is excellent. All functionality working correctly.

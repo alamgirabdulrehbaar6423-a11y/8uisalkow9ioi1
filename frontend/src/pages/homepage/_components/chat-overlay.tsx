@@ -467,6 +467,30 @@ export default function ChatOverlay({
   const wakeChannelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
   const wakeRequestIdRef = useRef<string | null>(null);
 
+  // ── Wake-up API keep-warm — SPEED CRITICAL ─────────────────────────────────
+  // Ping the edge function when the chat opens, every 2 minutes and whenever
+  // the tab becomes visible again. Each ping boots/keeps the isolate hot,
+  // keeps its TLS connection to Twilio alive AND refreshes the account-tier
+  // cache — so tapping ⏰ sends EXACTLY ONE request (the call itself) over an
+  // already-warm path instead of paying cold-start + pre-flight penalties.
+  useEffect(() => {
+    const warm = () => {
+      void fetch(`${WAKE_API_BASE}/wake-up/health`, { cache: "no-store" }).catch(
+        () => {},
+      );
+    };
+    warm();
+    const id = window.setInterval(warm, 120_000);
+    const onVisible = () => {
+      if (document.visibilityState === "visible") warm();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      window.clearInterval(id);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, []);
+
   const teardownWake = useCallback(() => {
     stopRingTone();
     if (wakeTimerRef.current) {

@@ -155,30 +155,42 @@ function twilioErrorMessage(data: Record<string, unknown>): {
 }
 
 // ── Account-tier cache ─────────────────────────────────────────────────────────
-// Module scope survives across warm invocations, so most ⏰ taps place the
-// call with ZERO pre-flight lookups (mirrors the dev middleware). On a cold
-// start we do ONE quick account lookup so the correct tier path is used.
+// Module scope survives across warm invocations. The tier is refreshed in the
+// BACKGROUND (never blocking a call) and also by every /health ping — the
+// frontend pings /health on load and every couple of minutes, so a ⏰ tap hits
+// a hot isolate, a warm TLS connection to Twilio AND a cached tier: the ONLY
+// request between tap and ring is the call itself.
 let cachedIsTrial: boolean | null = null;
 let tierCheckedAt = 0;
 const TIER_TTL_MS = 5 * 60_000;
 
-async function resolveIsTrial(cfg: TwilioConfig): Promise<boolean> {
-  if (cachedIsTrial !== null && Date.now() - tierCheckedAt <= TIER_TTL_MS) {
-    return cachedIsTrial;
-  }
+function cacheTierFromAccount(data: Record<string, unknown>): void {
+  cachedIsTrial = String(data.type ?? "").toLowerCase() === "trial";
+  tierCheckedAt = Date.now();
+}
+
+async function refreshAccountTier(cfg: TwilioConfig): Promise<void> {
   try {
     const account = await twilioFetch(cfg, `/Accounts/${cfg.accountSid}.json`);
-    if (account.ok) {
-      cachedIsTrial =
-        String(account.data.type ?? "").toLowerCase() === "trial";
-      tierCheckedAt = Date.now();
-    }
+    if (account.ok) cacheTierFromAccount(account.data);
   } catch {
-    /* network hiccup — fall through to the safe default below */
+    /* network hiccup — keep the previous cached value */
   }
-  // Defaulting to the Trial path is safe on any tier — the Twilio template
-  // URL is valid for Full accounts too.
-  return cachedIsTrial ?? true;
+}
+
+// Schedules background work that outlives the response (Supabase Edge
+// Runtime's waitUntil), falling back to fire-and-forget.
+function runInBackground(p: Promise<unknown>): void {
+  const edgeRuntime = (
+    globalThis as unknown as {
+      EdgeRuntime?: { waitUntil?: (p: Promise<unknown>) => void };
+    }
+  ).EdgeRuntime;
+  if (edgeRuntime && typeof edgeRuntime.waitUntil === "function") {
+    edgeRuntime.waitUntil(p);
+  } else {
+    void p;
+  }
 }
 
 // ── Request handler ─────────────────────────────────────────────────────────────
@@ -228,6 +240,9 @@ deno.serve(async (req: Request): Promise<Response> => {
         error: err.message,
       });
     }
+    // KEEP-WARM: this lookup doubles as the account-tier cache refresh, so
+    // the frontend's periodic /health ping keeps the POST path pre-flight-free.
+    cacheTierFromAccount(account.data);
     return json(200, {
       ok: true,
       accountStatus: account.data.status ?? null, // "active"
@@ -278,7 +293,14 @@ deno.serve(async (req: Request): Promise<Response> => {
   // automatically switches to our own /wake-up/twiml "Good morning" script
   // with the 45s ring timeout.
   if (sub === "root" && req.method === "POST") {
-    const isTrial = await resolveIsTrial(cfg);
+    // ZERO pre-flight requests — SPEED CRITICAL. Use the cached account tier
+    // (kept hot by /health pings); if it's stale, refresh it in the
+    // BACKGROUND without delaying this call. Defaulting to the Trial path is
+    // safe on any tier — the Twilio template URL is valid for Full accounts.
+    if (cachedIsTrial === null || Date.now() - tierCheckedAt > TIER_TTL_MS) {
+      runInBackground(refreshAccountTier(cfg));
+    }
+    const isTrial = cachedIsTrial ?? true;
 
     let call: TwilioResult;
     if (isTrial) {
