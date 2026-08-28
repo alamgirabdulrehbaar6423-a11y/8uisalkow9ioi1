@@ -64,6 +64,10 @@ const WAKE_API_BASE =
     "",
   ) || "/api";
 
+// The sweet little note dropped into the chat the moment a wake-up call is
+// successfully placed, so the conversation keeps a record of it.
+const WAKE_UP_NOTE_TEXT = "⏰ Wake-up call sent 💗";
+
 // Shared style for the small round search-nav buttons (up / down / close).
 const searchNavBtnStyle: CSSProperties = {
   width: 30,
@@ -488,12 +492,49 @@ export default function ChatOverlay({
     setWakeRinging(false);
   }, [teardownWake]);
 
+  // ── Wake-up chat note ─────────────────────────────────────────────────────
+  // Drops "⏰ Wake-up call sent 💗" into the chat as soon as the call is
+  // placed, using the same optimistic-then-replace flow as normal sends so it
+  // shows instantly here and syncs to the other side via Supabase realtime.
+  const sendWakeUpNote = useCallback(async () => {
+    const from = senderRef.current;
+    const optimistic: ChatMessage = {
+      id: `opt-wake-${Date.now()}`,
+      type: "text",
+      text: WAKE_UP_NOTE_TEXT,
+      sender: from,
+      timestamp: Date.now(),
+      sessionId: SESSION_ID,
+      edited: false,
+      replyToId: null,
+      replySnapshot: null,
+    };
+    setMessages((prev) => [...prev, optimistic]);
+    setAtBottom(true);
+    const saved = await cloudCreateMessage(
+      WAKE_UP_NOTE_TEXT,
+      from,
+      SESSION_ID,
+      null,
+    );
+    setMessages((prev) => {
+      if (!saved) {
+        // Cloud write failed — quietly remove the optimistic note (the call
+        // itself already went out; the note is just a nicety).
+        return prev.filter((m) => m.id !== optimistic.id);
+      }
+      if (prev.some((m) => m.id === saved.id)) {
+        return prev.filter((m) => m.id !== optimistic.id);
+      }
+      return prev.map((m) => (m.id === optimistic.id ? saved : m));
+    });
+  }, []);
+
   const startWakeUp = useCallback(() => {
     // ── REAL PHONE CALL — SPEED CRITICAL ────────────────────────────────────
     // Fire the Twilio request in the VERY FIRST statement so it leaves the
     // device the instant ⏰ is tapped — before haptics, state updates, the
     // ringtone AudioContext or anything else runs. Every ms here delays the
-    // actual phone ringing. (The server keeps a hot TLS connection to Twilio,
     // actual phone ringing. (The wake-up API is a Supabase Edge Function in
     // production, or the local /api middleware during development.)
     const callPromise = fetch(`${WAKE_API_BASE}/wake-up`, { method: "POST" });
@@ -530,6 +571,8 @@ export default function ChatOverlay({
           throw new Error(data?.error || "Couldn't start the phone call.");
         }
         const callSid = String(data.callSid);
+        // The call is officially on its way — drop the sweet note in the chat.
+        void sendWakeUpNote();
         wakePollRef.current = window.setInterval(() => {
           void (async () => {
             try {
@@ -639,7 +682,7 @@ export default function ChatOverlay({
           .subscribe();
         wakeChannelRef.current = ch;
       });
-  }, [teardownWake, stopWakeUp]);
+  }, [teardownWake, stopWakeUp, sendWakeUpNote]);
 
   useEffect(() => () => {
     teardownWake();
