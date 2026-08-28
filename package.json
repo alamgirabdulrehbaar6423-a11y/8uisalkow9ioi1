@@ -1,0 +1,12 @@
+{
+  "name": "habiba-faizan-chat",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Root wrapper. The actual app lives in ./frontend (Vite SPA) and the Supabase backend in ./backend. These root scripts just delegate to the frontend so the platform preview (yarn dev) keeps working.",
+  "scripts": {
+    "dev": "yarn --cwd frontend dev",
+    "build": "yarn --cwd frontend build",
+    "preview": "yarn --cwd frontend preview",
+    "install:frontend": "yarn --cwd frontend install"
+  }
+}
